@@ -1,0 +1,6 @@
+#folder
+runs/
+dataset/
+
+#file
+*.ipynb
