@@ -49,27 +49,10 @@ def main(config):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], 
             std=[0.229, 0.224, 0.225])])
 
-    base_model = models.vgg16(pretrained=True)
-    model = NIMA(base_model)
+    model = PANet("Non", device)
+    model = model.to(device)
 
-    if config.warm_start:
-        model.load_state_dict(torch.load(os.path.join(config.ckpt_path, 'epoch-%d.pth' % config.warm_start_epoch)))
-        print('Successfully loaded model epoch-%d.pth' % config.warm_start_epoch)
-
-    if config.multi_gpu:
-        model.features = torch.nn.DataParallel(model.features, device_ids=config.gpu_ids)
-        model = model.to(device)
-    else:
-        model = model.to(device)
-
-    conv_base_lr = config.conv_base_lr
-    dense_lr = config.dense_lr
-    optimizer = optim.SGD([
-        {'params': model.features.parameters(), 'lr': conv_base_lr},
-        {'params': model.classifier.parameters(), 'lr': dense_lr}],
-        momentum=0.9
-    )
-
+    optimizer = optim.SGD(model.parameters(), momentum=0.9, lr= config.conv_base_lr)
     param_num = 0
     for param in model.parameters():
         if param.requires_grad:
@@ -96,7 +79,7 @@ def main(config):
             for i, data in enumerate(train_loader):
                 images = data['image'].to(device)
                 labels = data['annotations'].to(device).float()
-                outputs = model(images)
+                outputs = model(images, len(data['image']))
                 outputs = outputs.view(-1, 10, 1)
 
                 optimizer.zero_grad()
@@ -119,12 +102,7 @@ def main(config):
             if config.decay:
                 if (epoch + 1) % 10 == 0:
                     conv_base_lr = conv_base_lr * config.lr_decay_rate ** ((epoch + 1) / config.lr_decay_freq)
-                    dense_lr = dense_lr * config.lr_decay_rate ** ((epoch + 1) / config.lr_decay_freq)
-                    optimizer = optim.SGD([
-                        {'params': model.features.parameters(), 'lr': conv_base_lr},
-                        {'params': model.classifier.parameters(), 'lr': dense_lr}],
-                        momentum=0.9
-                    )
+                    optimizer = optim.SGD(model.parameters(), momentum=0.9, lr = conv_base_lr)
 
             # do validation after each epoch
             batch_val_losses = []
@@ -132,7 +110,7 @@ def main(config):
                 images = data['image'].to(device)
                 labels = data['annotations'].to(device).float()
                 with torch.no_grad():
-                    outputs = model(images)
+                    outputs = model(images, len(data['image']))
                 outputs = outputs.view(-1, 10, 1)
                 val_loss = emd_loss(labels, outputs)
                 batch_val_losses.append(val_loss.item())
@@ -148,7 +126,7 @@ def main(config):
                 print('Saving model...')
                 if not os.path.exists(config.ckpt_path):
                     os.makedirs(config.ckpt_path)
-                torch.save(model.state_dict(), os.path.join(config.ckpt_path, 'epoch-%d.pth' % (epoch + 1)))
+                torch.save(model.state_dict(), os.path.join(config.ckpt_path, 'Proposed-Non-epoch-%d.pth' % (epoch + 1)))
                 print('Done.\n')
                 # reset count
                 count = 0
@@ -175,7 +153,6 @@ def main(config):
     if config.test:
         model.eval()
         # compute mean score
-        test_transform = val_transform
         testset = AVADataset(csv_file=config.test_csv_file, root_dir=config.img_path, transform=val_transform)
         test_loader = torch.utils.data.DataLoader(testset, batch_size=config.test_batch_size, shuffle=False, num_workers=config.num_workers)
 
@@ -183,7 +160,7 @@ def main(config):
         std_preds = []
         preds = []
         gt = []
-        
+
         for data in test_loader:
             image = data['image'].to(device)
             labels = data['annotations'].to(device).float()
@@ -192,22 +169,22 @@ def main(config):
             predicted_mean, predicted_std, gt_mean = 0.0, 0.0, 0.0
             for i, elem in enumerate(output, 1):
                 predicted_mean += i * elem
-                
+
             for k, elem in enumerate(labels, 1):
                 gt_mean += k * elem
-  
+
             for j, elem in enumerate(output, 1):
                 predicted_std += elem * (j - predicted_mean) ** 2
-            
+
             predicted_std = predicted_std ** 0.5
             mean_preds.append(predicted_mean)
             std_preds.append(predicted_std)
-            
+
             if predicted_mean >= 0.5:
-                preds.append(1) 
+                preds.append(1)
             else:
                 preds.append(0)
-                
+
             if gt_mean >= 0.5:
                 gt.append(1)
             else:
@@ -220,7 +197,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     # input parameters
-    parser.add_argument('--img_path', type=str, default='./dataset/images/images')
+    parser.add_argument('--img_path', type=str, default='./dataset/images/images/')
     parser.add_argument('--train_csv_file', type=str, default='./dataset/train.csv')
     parser.add_argument('--val_csv_file', type=str, default='./dataset/val.csv')
     parser.add_argument('--test_csv_file', type=str, default='./dataset/test.csv')
@@ -240,7 +217,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=100)
 
     # misc
-    parser.add_argument('--ckpt_path', type=str, default='./ckpts')
+    parser.add_argument('--ckpt_path', type=str, default='./save2')
     parser.add_argument('--multi_gpu', action='store_true')
     parser.add_argument('--gpu_ids', type=list, default=None)
     parser.add_argument('--warm_start', action='store_true')

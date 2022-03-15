@@ -18,22 +18,57 @@ from torch.nn.modules.module import Module
 import torchvision.models as models
 from efficientnet_pytorch import EfficientNet
 
+
 class PANet(nn.Module):
-    def __init__(self, backbone, principle, num_classes = 10):
+    def __init__(self, method, device, num_classes=10):
         super(PANet, self).__init__()
-        self.backbone = backbone.features
-        self.principle = principle
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=0.75),
-            nn.Linear(in_features=25088, out_features=num_classes),
-            nn.Softmax())
 
-    def forward(self, x):
-        backbone_out = self.backbone(x)
-        principle_out = self.principle(x)
+        self.backbone = models.vgg19(pretrained=True).features
+        self.method = method
+        self.device = device
+        self.adj = torch.ones(49, 49)
+        self.adj = self.adj.to(device)
 
-        out = torch.matmul(backbone_out, principle_out)
-        out = self.classifier(out)
+        if self.method == "Non":
+            self.principle = resnet2D56(non_local=True)
+            self.principle.load_state_dict(torch.load("./save/Union_Non_BCE_0.pt"))
+
+        elif self.method == "GCN":
+            self.principle = GCN(512, 1024, 8, dropout=0.5)
+            self.principle.load_state_dict(torch.load("./save/Union_GCN_BCE_0.pt"))
+
+        self.set_parameter_requires_grad(self.principle, True)
+        self.principle = self.principle.to(device)
+        self.backbone = self.backbone.to(device)
+
+        self.pool = nn.AdaptiveAvgPool2d((7, 7))
+        self.fc = nn.Linear(in_features=25235, out_features=num_classes)  # Non 25235, GCN 25480
+
+    def forward(self, x, bs):
+
+        if self.method == "Non":
+            back_out = self.backbone(x)
+            prin_out = self.principle.conv1(x)
+            prin_out = self.principle.layer1(prin_out)
+            prin_out = self.principle.layer2(prin_out)
+            prin_out = self.principle.layer3(prin_out)
+            prin_out = self.pool(prin_out)
+
+        elif self.method == "GCN":
+            prin_out = self.principle.backbone(x)
+            prin_out = prin_out.view([bs, 512, -1])
+            prin_out = prin_out.transpose(1,2)
+            prin_out = F.relu(self.principle.gc1(prin_out, self.adj))
+            prin_out = F.relu(self.principle.gc2(prin_out, self.adj))
+            prin_out = F.relu(self.principle.gc2(prin_out, self.adj))
+            prin_out = F.softmax(self.principle.gc3(prin_out, self.adj), dim=1)
+            prin_out = prin_out.transpose(1,2)
+            prin_out = prin_out.view([bs, -1, 7, 7])
+
+        out = torch.cat([back_out, prin_out], dim=1)
+        out = F.softmax(out, dim=1)
+        out = out.view([bs, -1])
+        out = self.fc(out)
 
         return out
 
