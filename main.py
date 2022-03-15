@@ -23,15 +23,15 @@ import torchvision.models as models
 
 from torch.utils.tensorboard import SummaryWriter
 
-from dataset.dataset import AVADataset
+from load_dataset.dataset import AVADataset
 
 from model.model import *
+from losses import emd_loss
 
 
 def main(config):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
     writer = SummaryWriter()
 
     train_transform = transforms.Compose([
@@ -68,7 +68,7 @@ def main(config):
         {'params': model.features.parameters(), 'lr': conv_base_lr},
         {'params': model.classifier.parameters(), 'lr': dense_lr}],
         momentum=0.9
-        )
+    )
 
     param_num = 0
     for param in model.parameters():
@@ -90,6 +90,7 @@ def main(config):
         init_val_loss = float('inf')
         train_losses = []
         val_losses = []
+
         for epoch in range(config.warm_start_epoch, config.epochs):
             batch_losses = []
             for i, data in enumerate(train_loader):
@@ -219,10 +220,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     # input parameters
-    parser.add_argument('--img_path', type=str, default='./data/images')
-    parser.add_argument('--train_csv_file', type=str, default='./data/train_labels.csv')
-    parser.add_argument('--val_csv_file', type=str, default='./data/val_labels.csv')
-    parser.add_argument('--test_csv_file', type=str, default='./data/test_labels.csv')
+    parser.add_argument('--img_path', type=str, default='./dataset/images/images')
+    parser.add_argument('--train_csv_file', type=str, default='./dataset/train.csv')
+    parser.add_argument('--val_csv_file', type=str, default='./dataset/val.csv')
+    parser.add_argument('--test_csv_file', type=str, default='./dataset/test.csv')
 
     # training parameters
     parser.add_argument('--train',action='store_true')

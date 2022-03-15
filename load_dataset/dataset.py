@@ -57,7 +57,6 @@ class PDataset(data.Dataset):
             
         return sample
         
-    
 
 if __name__ == '__main__':
 

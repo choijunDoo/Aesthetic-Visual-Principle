@@ -3,6 +3,9 @@ import os
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+import winnt
+from sklearn.model_selection import KFold, GroupKFold
+from sklearn.metrics import precision_score, average_precision_score
 
 import torch
 import torch.autograd as autograd
@@ -15,22 +18,24 @@ import torchvision.models as models
 from torch.utils.tensorboard import SummaryWriter
 
 from load_dataset.dataset import PDataset
-from losses import focal_binary_cross_entropy, FocalLoss
+from losses import focal_binary_cross_entropy, FocalLoss, AsymmetricLoss, CBLoss
 
 from model.model import *
 from evalution_metrics import AverageMeter, accuracy, pred_acc
+from model.CBAM import ResidualNet
+from torchmetrics import HammingDistance, HingeLoss
 
 import warnings
 warnings.filterwarnings('ignore')
 
-def train(train_loader, val_loader, model, loss_fn, lr = 1e-4, epochs = 50, decay = 'store_true', lr_decay_rate = 0.95, lr_decay_freq = 10):
+def train(train_loader, val_loader, model, loss_fn, lr = 1e-4, epochs = 50, k_folds = 5, decay = 'store_true', lr_decay_rate = 0.95, lr_decay_freq = 10):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(device)
 
-    writer = SummaryWriter()
+    # writer = SummaryWriter()
 
     model = model.to(device)
-    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    optimizer = optim.SGD(model.parameters(), momentum=0.9, lr=lr, weight_decay=0.1)
 
     param_num = 0
     for param in model.parameters():
@@ -40,11 +45,16 @@ def train(train_loader, val_loader, model, loss_fn, lr = 1e-4, epochs = 50, deca
 
     train_loss_arr = []
     train_acc_arr = []
-    train_prec_arr = [] # multi_label
+    train_micro_prec_arr = [] # multi_label
+    train_macro_prec_arr = []  # multi_label
 
     val_loss_arr = []
     val_acc_arr = []
-    val_prec_arr = [] #  multi-label
+    val_micro_prec_arr = [] #  multi-label
+    val_macro_prec_arr = []  # multi-label
+
+    adj = torch.ones(7 * 7, 7 * 7)
+    adj = adj.to(device)
 
     for epoch in range(0, epochs):
 
@@ -52,33 +62,33 @@ def train(train_loader, val_loader, model, loss_fn, lr = 1e-4, epochs = 50, deca
 
         losses = AverageMeter()
         top1 = AverageMeter()
-        precisions = AverageMeter()
+        micro_precisions = AverageMeter()
+        macro_precisions = AverageMeter()
 
-        batch_losses = []
         for i, data in enumerate(train_loader):
             images = data['image'].to(device)
-            labels = data['information'].long().to(device)  ## (batch 128, 8)
-            outputs = model(images)  # (batch, 128, 8)
-            _, labels = torch.max(labels, 1)
-            #         outputs = outputs.view(-1, 10, 1)
-            #         outputs = torch.sigmoid(outputs)
+            labels = data['information'].to(device).float() ## (batch 128, 8)
+
+            outputs = model(images, adj, len(data['img_id']))  # (batch, 128, 8)
+            outputs = F.sigmoid(outputs)
+            # _, labels = torch.max(labels, 1)
+            # outputs = outputs.view(-1, 8, 1)
             optimizer.zero_grad()
-
             outputs.float()
-            #         labels = labels.float()
-
             loss = loss_fn(outputs, labels)  ##
-
             loss.float()
-            #         batch_losses.append(loss.item())
 
-            prec1 = accuracy(outputs.data, labels)  ##
-            prec1 = prec1[0]
-            #         precision = precision_score(np.round(outputs.detach().cpu().numpy()), labels.detach().cpu().numpy(), average = 'samples')
+            prec1 = pred_acc(outputs.data, labels)  ##
+            # prec1 = prec1[0]
 
+            micro_precision = precision_score(np.round(labels.detach().cpu().numpy()), np.round(outputs.detach().cpu().numpy()),
+                                              average='micro')
+            macro_precision = precision_score(np.round(labels.detach().cpu().numpy()), np.round(outputs.detach().cpu().numpy()),
+                                              average='macro')
             losses.update(loss.item(), len(data['img_id']))
             top1.update(prec1, len(data['img_id']))
-            #         precisions.update(precision, len(data['img_id']))
+            micro_precisions.update(micro_precision, len(data['img_id']))
+            macro_precisions.update(macro_precision, len(data['img_id']))
 
             loss.backward()
             optimizer.step()
@@ -88,77 +98,89 @@ def train(train_loader, val_loader, model, loss_fn, lr = 1e-4, epochs = 50, deca
                       'Loss {loss.val:.4f} ({loss.avg:.4f})'.format(epoch, i, len(train_loader), loss=losses))
         #         writer.add_scalar('batch train loss', loss.data, i + epoch * (len(trainset) // 128 + 1))
 
-        #     avg_loss = sum(batch_losses) / (len(trainset) // 128 + 1)
-        #     train_losses.append(avg_loss)
-        #     print('Epoch %d mean training loss: %.4f' % (epoch + 1, avg_loss))
-
         train_loss_arr.append(losses.avg)
         train_acc_arr.append(top1.avg)
-        #     train_prec_arr.append(precisions.avg)
-        print("train result: Loss: %.4f, Acc: %.4f" % (losses.avg, top1.avg))
+        train_micro_prec_arr.append(micro_precisions.avg)
+        train_macro_prec_arr.append(macro_precisions.avg)
+
+        print("train result: Loss: %.4f, Acc: %.4f, Micro-Prec: %.4f, Macro-Prec: %.4f"
+              % (losses.avg, top1.avg, micro_precisions.avg, macro_precisions.avg))
+        # print("train result: Loss: %.4f, Acc: %.4f" % (losses.avg, top1.avg))
 
         # exponetial learning rate decay
         if decay:
             if (epoch + 1) % 10 == 0:
-                conv_base_lr = conv_base_lr * lr_decay_rate ** ((epoch + 1) / lr_decay_freq)
-                #             dense_lr = dense_lr * lr_decay_rate ** ((epoch + 1) / lr_decay_freq)
-                #             optimizer = optim.SGD([
-                #                 {'params': model.features.parameters(), 'lr': conv_base_lr},
-                #                 {'params': model.classifier.parameters(), 'lr': dense_lr}],
-                #                 momentum=0.9
-                #             )
-                optimizer = optim.SGD(model.parameters(), lr=conv_base_lr, momentum=0.9)
+                lr = lr * lr_decay_rate ** ((epoch + 1) / lr_decay_freq)
+                # dense_lr = dense_lr * lr_decay_rate ** ((epoch + 1) / lr_decay_freq)
+                # optimizer = optim.SGD([
+                #     {'params': model.features.parameters(), 'lr': conv_base_lr},
+                #     {'params': model.classifier.parameters(), 'lr': dense_lr}],
+                #     momentum=0.9
+                # )
+                optimizer = optim.SGD(model.parameters(), momentum=0.9, lr=lr, weight_decay=0.1)
 
         model.eval()
         with torch.no_grad():
-            val_loss_sum = 0
-            val_acc_sum = 0
 
             losses = AverageMeter()
             top1 = AverageMeter()
-            #         precisions = AverageMeter()
+            micro_precisions = AverageMeter()
+            macro_precisions = AverageMeter()
 
             for i, data in enumerate(val_loader):
                 images = data['image'].to(device)
-                labels = data['information'].long().to(device)  ## (batch 128, 8)
-                outputs = model(images)  # (batch, 128, 8)
-                _, labels = torch.max(labels, 1)
-                #             labels = labels.float()
+                labels = data['information'].to(device) ## (batch 128, 8)
+                outputs = model(images, adj, len(data['img_id']))  # (batch, 128, 8)
+                outputs = F.sigmoid(outputs)
+                # _, labels = torch.max(labels, 1)
+                labels = labels.float()
 
-                #             outputs = torch.sigmoid(outputs)
                 outputs.float()
-
                 loss = loss_fn(outputs, labels)
-
-                outputs.float()
                 loss.float()
 
-                prec1 = accuracy(outputs.data, labels)
-                prec1 = prec1[0]
-                #             precision = precision_score(np.round(outputs.detach().cpu().numpy()), labels.detach().cpu().numpy(), average = 'samples')
+                prec1 = pred_acc(outputs.data, labels)
+                # prec1 = prec1[0]
+                micro_precision = precision_score(np.round(labels.detach().cpu().numpy()), np.round(outputs.detach().cpu().numpy()),
+                                                  average='micro')
+                macro_precision = precision_score(np.round(labels.detach().cpu().numpy()), np.round(outputs.detach().cpu().numpy()),
+                                                  average='macro')
 
                 losses.update(loss.item(), len(data['img_id']))
                 top1.update(prec1, len(data['img_id']))
-                #             precisions.update(precision, len(data['img_id']))
+                micro_precisions.update(micro_precision, len(data['img_id']))
+                macro_precisions.update(macro_precision, len(data['img_id']))
 
                 if i % 10 == 0:
                     print('Test: [{0}/{1}]\t'
                           'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                          'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'.format(
-                        i, len(val_loader), loss=losses, top1=top1))
+                          'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                          'Micro-Prec {micro_prec.val:.3f} ({micro_prec.avg:.3f})\t'
+                          'Macro-Prec {macro_prec.val:.3f} ({macro_prec.avg:.3f})\t'.format(
+                        i, len(val_loader), loss=losses, top1=top1, micro_prec = micro_precisions, macro_prec = macro_precisions))
+
+                    # print('Test: [{0}/{1}]\t'
+                    #       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                    #       'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'.format(
+                    #     i, len(val_loader), loss=losses, top1=top1))
 
             val_loss_arr.append(losses.avg)
             val_acc_arr.append(top1.avg)
-            #         val_prec_arr.append(precisions.avg)
-            print("Validation result: Loss: %.4f, Acc: %.4f" % (losses.avg, top1.avg))
+            val_micro_prec_arr.append(micro_precisions.avg)
+            val_macro_prec_arr.append(micro_precisions.avg)
+            print("Validation result: Loss: %.4f, Acc: %.4f, Micro-Prec: %.4f, Macro-Prec: %.4f" % (losses.avg, top1.avg, micro_precisions.avg, macro_precisions.avg))
+            # print("Validation result: Loss: %.4f, Acc: %.4f" % (losses.avg, top1.avg))
+
+    return top1.avg, micro_precisions.avg, macro_precisions.avg
+
 
 if __name__ == "__main__":
 
+
     train_transform = transforms.Compose([
         transforms.Scale((224, 224)),
-        #     transforms.RandomCrop(224),
-        #     transforms.RandomHorizontalFlip(),
-        #     transforms.ColorJitter(),
+        # transforms.RandomCrop(224),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
@@ -168,14 +190,78 @@ if __name__ == "__main__":
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
-    trainset = PDataset(csv_file="./dataset/2_scale_train_single_intersection.csv",
-                        root_dir="./dataset/images/images", transform = train_transform)
-    valset = PDataset(csv_file="./dataset/2_scale_test_single_intersection.csv",
-                      root_dir="./dataset/images/images", transform = val_transform)
+    P_dataset = PDataset(csv_file="./dataset/union.csv",
+                         root_dir="./dataset/images/images")
 
-    train_loader = torch.utils.data.DataLoader(trainset, batch_size=64, shuffle=True, num_workers=0)
-    val_loader = torch.utils.data.DataLoader(valset, batch_size=64, shuffle=False, num_workers=0)
+    # trainset = PDataset(csv_file="./dataset/train_crop.csv",
+    #                     root_dir="./dataset/crop_dataset", transform = train_transform)
+    # valset = PDataset(csv_file="./dataset/test_crop.csv",
+    #                   root_dir="./dataset/crop_dataset", transform = val_transform)
 
-    model = PNet(base_model = 'resnet50')
-    loss_fn = FocalLoss(gamma = 2)
-    train(train_loader, val_loader, model, loss_fn)
+    # train_loader = torch.utils.data.DataLoader(trainset, batch_size=64, shuffle=True, num_workers=0)
+    # val_loader = torch.utils.data.DataLoader(valset, batch_size=64, shuffle=False, num_workers=0)
+
+    # # For fold results
+    acc_results = {}
+    micro_results = {}
+    macro_results = {}
+
+    k_folds = 5
+    kfold = KFold(n_splits=k_folds, shuffle=False)
+
+    # loss_fn = CBLoss(samples_per_cls = [842, 997, 298, 223, 257, 195, 321, 252], no_of_classes = 8, loss_type = "focal", beta = 0.9999, gamma = 2.0)
+    loss_fn = nn.BCELoss()
+    # model = resnet2D56(non_local=True)
+
+    # train_loader = torch.utils.data.DataLoader(trainset, batch_size=4, shuffle=True)
+    # val_loader = torch.utils.data.DataLoader(valset, batch_size=4, shuffle=False)
+    #
+    # train(train_loader, val_loader, model, loss_fn, lr=1e-3, epochs=20)
+    # torch.save(model.state_dict(), "./save/Crop_L2_BCE.pt")
+
+
+    for fold, (train_ids, test_ids) in enumerate(kfold.split(P_dataset)):
+        model = GCN(512, 1024, 8, dropout=0.5)
+        print(f'FOLD {fold}')
+        print('--------------------------------')
+
+        train_subsampler = torch.utils.data.SubsetRandomSampler(train_ids)
+        test_subsampler = torch.utils.data.SubsetRandomSampler(test_ids)
+
+        # Define data loaders for training and testing data in this fold
+        train_loader = torch.utils.data.DataLoader(
+            PDataset(csv_file="./dataset/union.csv",
+                     root_dir="./dataset/images/images", transform = train_transform),
+            batch_size = 64, sampler = train_subsampler)
+
+        val_loader = torch.utils.data.DataLoader(
+            PDataset(csv_file="./dataset/union.csv",
+                     root_dir="./dataset/images/images", transform = val_transform),
+            batch_size = 64, sampler = test_subsampler)
+
+        acc_results[fold], micro_results[fold], macro_results[fold] = train(train_loader, val_loader, model, loss_fn, lr=1e-2, epochs = 50)
+
+        torch.save(model.state_dict(), "./save/Non_Union_BCE.pt".format(fold))
+
+    print(f'K-FOLD CROSS VALIDATION RESULTS FOR {k_folds} FOLDS')
+    print('--------------------------------')
+    sum = 0.0
+
+    for key, value in acc_results.items():
+        print(f'Fold {key}: {value} %')
+        sum += value
+    print(f'Average: {sum / len(acc_results.items())} %')
+
+    sum = 0.0
+
+    for key, value in micro_results.items():
+        print(f'Fold {key}: {value} %')
+        sum += value
+    print(f'Average: {sum / len(micro_results.items())} %')
+
+    sum = 0.0
+
+    for key, value in micro_results.items():
+        print(f'Fold {key}: {value} %')
+        sum += value
+    print(f'Average: {sum / len(micro_results.items())} %')

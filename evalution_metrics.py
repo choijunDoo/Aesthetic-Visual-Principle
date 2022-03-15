@@ -1,4 +1,5 @@
 import torch
+from sklearn.metrics import precision_score
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -34,4 +35,6 @@ def accuracy(output, target, topk=(1,)):
 
 # multi-label
 def pred_acc(predicted, original):
+    # original = torch.round(original)
+
     return (torch.round(predicted) == original).sum() / original.size(1) / original.size(0)
