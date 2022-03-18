@@ -49,7 +49,7 @@ def main(config):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], 
             std=[0.229, 0.224, 0.225])])
 
-    model = PANet("Non", device)
+    model = PANet("GCN_Element", device)
     model = model.to(device)
 
     optimizer = optim.SGD(model.parameters(), momentum=0.9, lr= config.conv_base_lr)

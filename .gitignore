@@ -2,6 +2,7 @@
 runs/
 dataset/
 save/
+.idea/
 
 #file
 *.ipynb

@@ -25,6 +25,8 @@ from evalution_metrics import AverageMeter, accuracy, pred_acc
 from model.CBAM import ResidualNet
 from torchmetrics import HammingDistance, HingeLoss
 
+from transformers import ViTModel
+
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -35,7 +37,7 @@ def train(train_loader, val_loader, model, loss_fn, lr = 1e-4, epochs = 50, k_fo
     # writer = SummaryWriter()
 
     model = model.to(device)
-    optimizer = optim.SGD(model.parameters(), momentum=0.9, lr=lr, weight_decay=0.1)
+    optimizer = optim.SGD(model.parameters(), momentum=0.9, lr=lr)
 
     param_num = 0
     for param in model.parameters():
@@ -69,7 +71,7 @@ def train(train_loader, val_loader, model, loss_fn, lr = 1e-4, epochs = 50, k_fo
             images = data['image'].to(device)
             labels = data['information'].to(device).float() ## (batch 128, 8)
 
-            outputs = model(images, adj, len(data['img_id']))  # (batch, 128, 8)
+            outputs = model(images)[0]  # (batch, 128, 8)
             outputs = F.sigmoid(outputs)
             # _, labels = torch.max(labels, 1)
             # outputs = outputs.view(-1, 8, 1)
@@ -117,7 +119,7 @@ def train(train_loader, val_loader, model, loss_fn, lr = 1e-4, epochs = 50, k_fo
                 #     {'params': model.classifier.parameters(), 'lr': dense_lr}],
                 #     momentum=0.9
                 # )
-                optimizer = optim.SGD(model.parameters(), momentum=0.9, lr=lr, weight_decay=0.1)
+                optimizer = optim.SGD(model.parameters(), momentum=0.9, lr=lr)
 
         model.eval()
         with torch.no_grad():
@@ -130,7 +132,7 @@ def train(train_loader, val_loader, model, loss_fn, lr = 1e-4, epochs = 50, k_fo
             for i, data in enumerate(val_loader):
                 images = data['image'].to(device)
                 labels = data['information'].to(device) ## (batch 128, 8)
-                outputs = model(images, adj, len(data['img_id']))  # (batch, 128, 8)
+                outputs = model(images)[0]  # (batch, 128, 8)
                 outputs = F.sigmoid(outputs)
                 # _, labels = torch.max(labels, 1)
                 labels = labels.float()
@@ -178,15 +180,15 @@ if __name__ == "__main__":
 
 
     train_transform = transforms.Compose([
-        transforms.Scale((224, 224)),
-        # transforms.RandomCrop(224),
+        transforms.Scale((256, 256)),
+        transforms.RandomCrop(224),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
     val_transform = transforms.Compose([
         transforms.Scale((224, 224)),
-        #     transforms.RandomCrop(224),
+        # transforms.RandomCrop(224),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
@@ -221,7 +223,22 @@ if __name__ == "__main__":
 
 
     for fold, (train_ids, test_ids) in enumerate(kfold.split(P_dataset)):
-        model = GCN(512, 1024, 8, dropout=0.5)
+        # model = GCN(512, 1024, 512, dropout=0.5)
+        # model = ViT(
+        #     image_size=256,
+        #     patch_size=32,
+        #     num_classes=8,
+        #     dim=1024,
+        #     depth=6,
+        #     heads=16,
+        #     mlp_dim=2048,
+        #     dropout=0.1,
+        #     emb_dropout=0.1
+        # )
+        # model = VisionTransformer.from_name("ViT-B_32", image_size = 256, num_classes = 8)
+        pretrained_vit_model = ViTModel.from_pretrained('google/vit-base-patch16-224-in21k', output_attentions=True)
+        model = PreTrainedViT(pretrained_vit_model, 768, 8)
+
         print(f'FOLD {fold}')
         print('--------------------------------')
 
@@ -239,9 +256,9 @@ if __name__ == "__main__":
                      root_dir="./dataset/images/images", transform = val_transform),
             batch_size = 64, sampler = test_subsampler)
 
-        acc_results[fold], micro_results[fold], macro_results[fold] = train(train_loader, val_loader, model, loss_fn, lr=1e-2, epochs = 50)
+        acc_results[fold], micro_results[fold], macro_results[fold] = train(train_loader, val_loader, model, loss_fn, lr=5e-3, epochs = 50)
 
-        torch.save(model.state_dict(), "./save/Non_Union_BCE.pt".format(fold))
+        torch.save(model.state_dict(), "./save/VIT_{}.pt".format(fold))
 
     print(f'K-FOLD CROSS VALIDATION RESULTS FOR {k_folds} FOLDS')
     print('--------------------------------')

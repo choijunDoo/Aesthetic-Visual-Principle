@@ -89,6 +89,19 @@ class NIMA(nn.Module):
         out = self.classifier(out)
         return out
 
+class PreTrainedViT(nn.Module):
+    def __init__(self, pretrained_vit_model, d_model, classes):
+      super().__init__()
+      self.pretrained_vit_model = pretrained_vit_model
+      self.classifier = nn.Linear(d_model, classes)
+
+    def forward(self, x):
+      x = self.pretrained_vit_model(x)
+      attentions = x.attentions
+      output = self.classifier(x.last_hidden_state[:,0,:]) # cls tokken
+
+      return output, attentions
+
 class PNet(nn.Module):
     def __init__(self, num_classes=8):
         super(PNet, self).__init__()
@@ -407,24 +420,24 @@ class GCN(nn.Module):
     def __init__(self, nfeat, nhid, nclass, dropout):
         super(GCN, self).__init__()
 
-        self.backbone = models.vgg19(pretrained=True).features
+        self.backbone = models.vgg19(pretrained=False).features
         self.gc1 = GraphConvolution(nfeat, nhid)
         self.gc2 = GraphConvolution(nhid, nhid)
         self.gc3 = GraphConvolution(nhid, nclass)
-        self.fc = nn.Linear(392, nclass)
+        self.fc = nn.Linear(25088, 8)
         self.dropout = dropout
 
-        self.weights_init()
+        # self.weights_init()
 
     def forward(self, x, adj, bs):
         x = self.backbone(x)
         x = x.view([bs, 512, -1])
         x = x.transpose(1, 2)
 
-        x = F.relu(self.gc1(x, adj))
+        x = F.softmax(self.gc1(x, adj), dim=1)
         # x = F.dropout(x, self.dropout, training=self.training)
-        x = F.relu(self.gc2(x, adj))
-        x = F.relu(self.gc2(x, adj))
+        x = F.softmax(self.gc2(x, adj), dim=1)
+        # x = F.relu(self.gc2(x, adj))
         # x = F.dropout(x, self.dropout, training=self.training)
         x = F.softmax(self.gc3(x, adj), dim=1)
         # x = F.log_softmax(x, dim=1)

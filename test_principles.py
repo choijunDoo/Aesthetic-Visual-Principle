@@ -13,6 +13,7 @@ from load_dataset.dataset import PDataset
 
 from model.model import *
 from evalution_metrics import AverageMeter, accuracy, pred_acc
+from transformers import ViTModel
 
 
 import warnings
@@ -28,6 +29,9 @@ def test(test_loader, fold, method):
     elif method == "GCN":
         model = GCN(nfeat=512, nhid=1024, nclass=8, dropout=0.5)
         model.load_state_dict(torch.load("./save/Union_{}_BCE_{}.pt".format(method, fold)))
+    elif method == "ViT":
+        pretrained_vit_model = ViTModel.from_pretrained('google/vit-base-patch16-224-in21k', output_attentions=True)
+        model = PreTrainedViT(pretrained_vit_model, 768, 8)
 
     model = model.to(device)
 
@@ -49,6 +53,8 @@ def test(test_loader, fold, method):
                 outputs = model(images)
             elif method == "GCN":
                 outputs = model(images, adj, len(data['image']))
+            elif method == "ViT":
+                outputs = model(images)[0]
 
             outputs = F.sigmoid(outputs)
             labels.float()
