@@ -32,6 +32,7 @@ def test(test_loader, fold, method):
     elif method == "ViT":
         pretrained_vit_model = ViTModel.from_pretrained('google/vit-base-patch16-224-in21k', output_attentions=True)
         model = PreTrainedViT(pretrained_vit_model, 768, 8)
+        model.load_state_dict(torch.load("./save/ViT_{}.pt".format(fold)))
 
     model = model.to(device)
 
@@ -120,7 +121,7 @@ if __name__ == "__main__":
             PDataset(csv_file="./dataset/union.csv", root_dir="./dataset/images/images", transform=val_transform),
             batch_size=int(len(test_ids) / 100), sampler=test_subsampler)
 
-        test(test_loader, fold, "Non")
+        test(test_loader, fold, "ViT")
         #    acc_results[fold], micro_results[fold], macro_results[fold] = train(train_loader, val_loader, model, loss_fn, lr=1e-2, epochs=20)
         #
         #
